@@ -7,6 +7,45 @@ from qec import agent
 from qec.engine import Experiment
 
 
+@pytest.mark.parametrize("statuses", [[503, 503, 200], [502, 504, 200]])
+def test_transient_provider_failure_recovers(monkeypatch, statuses):
+    sleeps, requests = [], []
+    monkeypatch.setattr(agent.time, "sleep", sleeps.append)
+    def handle(request):
+        requests.append(request.content)
+        return httpx.Response(statuses[len(requests) - 1])
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        response = agent.provider_post(client, started=agent.time.monotonic(),
+                                       url="https://example.test", json={"contents": []})
+    assert response.status_code == 200
+    assert sleeps == [1, 2]
+    assert len(set(requests)) == 1
+
+
+def test_persistent_503_is_bounded_and_does_not_blame_credentials(monkeypatch):
+    requests = []
+    monkeypatch.setattr(agent.time, "sleep", lambda _: None)
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(503, text="private-key")
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(ValueError, match="temporarily unavailable") as exc:
+            agent.provider_post(client, started=agent.time.monotonic(), url="https://example.test")
+    assert len(requests) == 3
+    assert "private-key" not in str(exc.value)
+
+
+def test_auth_failure_is_not_retried():
+    requests = []
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(403)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert agent.provider_post(client, started=agent.time.monotonic(),
+                                   url="https://example.test").status_code == 403
+    assert len(requests) == 1
+
+
 def test_tool_loop_reads_evidence_and_stages_validated_plan(monkeypatch):
     calls = []
 

@@ -57,6 +57,23 @@ def tools_schema():
     ]
 
 
+def provider_post(client, *, started, **kwargs):
+    """Retry transient service failures without replaying completed tool calls."""
+    for attempt in range(3):
+        if time.monotonic() - started >= 90:
+            raise ValueError("Assistant time budget reached. Please try again later.")
+        response = client.post(**kwargs)
+        if response.status_code not in (502, 503, 504):
+            return response
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    raise ValueError(
+        f"Gemini is temporarily unavailable (HTTP {response.status_code}) after three attempts. "
+        "Please try again later. Your saved experiment is unchanged; "
+        "this response does not indicate an invalid API key."
+    )
+
+
 def chat(key, message, spec, run=None, history=None):
     if not key:
         raise ValueError(
@@ -84,8 +101,10 @@ def chat(key, message, spec, run=None, history=None):
                 raise ValueError(
                     "Assistant time budget reached. Please try a narrower question."
                 )
-            response = client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
+            response = provider_post(
+                client,
+                started=started,
+                url=f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
                 headers={"x-goog-api-key": key},
                 json={
                     "systemInstruction": {"parts": [{"text": SYSTEM}]},

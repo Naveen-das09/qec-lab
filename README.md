@@ -50,7 +50,7 @@ Questions, plans, recent conversation history, and selected result summaries are
 - A Python CLI, HTTP API, and optional browser WebMCP read/staging tools.
 - A bounded Gemini tool loop: read evidence → validate a proposed experiment → explain the result. A proposed plan requires the user to press **Run investigation**.
 
-Gemini's protocol and tool boundaries are tested with mocked responses; a live provider call requires your own key and has not been validated in this checkout.
+Gemini's protocol and tool boundaries are tested with mocked responses. A live `gemini-3.8-flash` smoke test also verified plan staging and analysis of real simulation evidence; see the [live validation record](docs/LIVE_VALIDATION.md). This is a small functional check, not a broad evaluation of scientific reliability. Live use requires your own key. Temporary HTTP 502/503/504 failures are retried up to three attempts with bounded backoff.
 
 ## A first investigation
 
