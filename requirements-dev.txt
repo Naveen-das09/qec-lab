@@ -1,0 +1,4 @@
+-r requirements.lock
+black==25.1.0
+jsbeautifier==1.15.4
+cssbeautifier==1.15.4

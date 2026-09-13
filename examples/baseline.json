@@ -1,0 +1,12 @@
+{
+  "title": "Surface-code memory baseline",
+  "question": "How does code distance affect logical memory performance?",
+  "distances": [3, 5, 7],
+  "probabilities": [0.001, 0.003, 0.005, 0.007, 0.01],
+  "rounds": 5,
+  "shots": 10000,
+  "measurement_multiplier": 1,
+  "decoder": "matched",
+  "seed": 42,
+  "budget_seconds": 120
+}

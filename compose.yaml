@@ -1,0 +1,13 @@
+services:
+  qec-lab:
+    build: .
+    ports:
+      - "127.0.0.1:4173:4173"
+    volumes:
+      - qec-data:/app/data
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+    restart: unless-stopped
+volumes:
+  qec-data:
