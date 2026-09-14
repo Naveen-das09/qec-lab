@@ -33,6 +33,81 @@ def wait_for_run(client, run_id):
     pytest.fail("Run did not terminate")
 
 
+def test_projects_isolate_runs_drafts_and_reports(client):
+    project = client.post('/api/projects', json={'name':'Noise study', 'notes':'Compare measurement noise.'}).json()
+    pid = project['id']
+    spec = Experiment(distances=[3], probabilities=[0.005], shots=1000).model_dump()
+    assert client.post('/api/draft?project_id=' + pid, json=spec).status_code == 200
+    assert client.get('/api/draft').json() is None
+    assert client.get('/api/draft?project_id=' + pid).json() == spec
+    r = client.post('/api/runs?project_id=' + pid, json=spec)
+    run = wait_for_run(client, r.json()['id'])
+    assert run['project_id'] == pid
+    assert client.get('/api/runs?project_id=default').json() == []
+    assert len(client.get('/api/runs?project_id=' + pid).json()) == 1
+    updated = client.put('/api/projects/' + pid, json={'name':'Revised study','notes':'Researcher observation'})
+    assert updated.status_code == 200
+    report = client.get('/api/projects/' + pid + '/report')
+    assert report.status_code == 200
+    assert 'Researcher observation' in report.text
+    assert 'Revised study' in report.text
+    assert run['id'] in report.text
+
+
+def test_legacy_runs_remain_in_default_project(client):
+    response = client.post('/api/runs', json={'distances':[3], 'shots':1000, 'probabilities':[0]})
+    run = wait_for_run(client, response.json()['id'])
+    del run['project_id']
+    server.save(run)
+    assert client.get('/api/runs/' + run['id']).json()['project_id'] == 'default'
+    assert client.get('/api/runs?project_id=default').json()[0]['id'] == run['id']
+
+
+def test_unknown_projects_and_blank_names_rejected(client):
+    assert client.post('/api/projects', json={'name':'   '}).status_code == 422
+    assert client.post('/api/runs?project_id=missing', json={}).status_code == 404
+    assert client.get('/api/draft?project_id=missing').status_code == 404
+    assert client.get('/api/projects/missing/report').status_code == 404
+
+
+def test_queue_cancellation_preserves_project_and_partial_record(client, monkeypatch):
+    submitted = []
+    class HeldWorker:
+        def submit(self, fn, *args):
+            submitted.append((fn, args))
+    monkeypatch.setattr(server, 'POOL', HeldWorker())
+    pid = client.post('/api/projects', json={'name':'Queued study'}).json()['id']
+    rid = client.post('/api/runs?project_id=' + pid, json={'distances':[3], 'shots':1000}).json()['id']
+    try:
+        jobs = client.get('/api/queue').json()
+        assert jobs[0]['id'] == rid and jobs[0]['project_id'] == pid
+        assert client.post('/api/runs/' + rid + '/cancel').status_code == 200
+        assert server.CANCEL[rid].is_set()
+        fn, args = submitted[0]
+        fn(*args)
+        run = client.get('/api/runs/' + rid).json()
+        assert run['status'] == 'cancelled'
+        assert run['project_id'] == pid
+        assert client.get('/api/queue').json() == []
+    finally:
+        server.CANCEL.pop(rid, None)
+
+
+def test_project_draft_conversations_are_scoped(client, monkeypatch):
+    seen = []
+    def chat(key, message, spec, run, history):
+        seen.append(history)
+        return {'answer':'Review your plan.', 'proposal':None, 'trace':[], 'model':'test'}
+    monkeypatch.setattr(server.agent, 'chat', chat)
+    pid = client.post('/api/projects', json={'name':'Assistant study'}).json()['id']
+    payload = {'message':'Stage a plan', 'spec':{}, 'project_id':pid}
+    assert client.post('/api/assistant', json=payload).status_code == 200
+    assert client.get('/api/messages?scope=draft').json() == []
+    assert len(client.get('/api/messages?scope=draft:' + pid).json()) == 1
+    assert client.post('/api/assistant', json=payload).status_code == 200
+    assert len(seen[1]) == 1
+
+
 def test_run_export_and_exact_replay(client, tmp_path):
     response = client.post(
         "/api/runs", json={"distances": [3], "probabilities": [0.005], "shots": 1000}

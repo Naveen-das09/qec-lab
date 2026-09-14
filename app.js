@@ -49,6 +49,8 @@ const DEFAULT = {
   budget_seconds: 120
 };
 const state = {
+  projectId: 'default',
+  projects: [],
   spec: structuredClone(DEFAULT),
   run: null,
   runs: [],
@@ -170,7 +172,10 @@ function renderHealth() {
   $('#engine-versions').innerHTML = ['python', 'stim', 'pymatching', 'numpy', 'machine', 'schema_version'].map(k => '<span>' + esc(k.replace('_', ' ')) + '<strong>' + esc(h.environment[k]) + '</strong></span>').join('');
 }
 async function refreshRuns() {
-  state.runs = await api('/runs');
+  const projectId = state.projectId;
+  const runs = await api('/runs?project_id=' + encodeURIComponent(projectId));
+  if (projectId !== state.projectId) return;
+  state.runs = runs;
   $('#run-count').textContent = state.runs.length;
   $('#recent-runs').innerHTML = state.runs.slice(0, 4).map(r => '<button class="recent-button ' + (r.id === state.run?.id ? 'selected' : '') + '" data-run="' + r.id + '"><i></i><span>' + esc(r.spec.title) + '</span></button>').join('') || '<p class="sidebar-hint">Your investigations will appear here.</p>';
   const el = $('#compare-run'),
@@ -186,6 +191,10 @@ async function loadRun(id) {
   const r = await api('/runs/' + id);
   if (token !== state.loadToken) return;
   state.run = r;
+  if (r.project_id !== state.projectId) {
+    state.projectId = r.project_id || 'default';
+    renderProjects();
+  }
   state.spec = structuredClone(r.spec);
   state.selected = r.points.find(p => p.failure)?.id || r.points[0]?.id || null;
   state.comparison = null;
@@ -546,12 +555,14 @@ function openPlan(s = state.spec) {
 on('#open-plan', 'click', () => openPlan());
 on('#edit-plan', 'click', () => openPlan());
 on('#close-plan', 'click', () => $('#plan-dialog').close());
-on('#new-investigation', 'click', async () => openPlan(await api('/draft') || structuredClone(DEFAULT)));
+const projectPath = path => path + '?project_id=' + encodeURIComponent(state.projectId);
+const draftScope = () => state.projectId === 'default' ? 'draft' : 'draft:' + state.projectId;
+on('#new-investigation', 'click', async () => openPlan(await api(projectPath('/draft')) || structuredClone(DEFAULT)));
 on('#save-plan', 'click', async () => {
   try {
     if (!$('#plan-form').reportValidity()) return;
     const spec = readPlan();
-    await post('/draft', spec);
+    await post(projectPath('/draft'), spec);
     state.spec = spec;
     state.run = null;
     state.selected = null;
@@ -560,7 +571,7 @@ on('#save-plan', 'click', async () => {
     clearTimeout(state.poll);
     $('#plan-dialog').close();
     view('investigation');
-    history.replaceState(null, '', '#draft');
+    history.replaceState(null, '', '#project=' + encodeURIComponent(state.projectId));
     renderRun();
     await loadChat();
     notify('Draft saved to this workspace.');
@@ -589,7 +600,7 @@ on('#plan-form', 'submit', async e => {
   $('#plan-error').hidden = true;
   try {
     const spec = readPlan(),
-      r = await post('/runs', spec);
+      r = await post(projectPath('/runs'), spec);
     $('#plan-dialog').close();
     await loadRun(r.id);
     tab('results');
@@ -678,9 +689,9 @@ function showAnswer(r) {
   }
 }
 async function loadChat() {
-  const scope = state.run?.id || 'draft',
+  const scope = state.run?.id || draftScope(),
     items = await api('/messages?scope=' + encodeURIComponent(scope));
-  if (scope !== (state.run?.id || 'draft')) return;
+  if (scope !== (state.run?.id || draftScope())) return;
   $$('#chat-messages > .chat-message, #chat-messages > .tool-trace').forEach(el => el.remove());
   $('.assistant-intro').hidden = items.length > 0;
   for (const item of items) {
@@ -703,16 +714,18 @@ on('#chat-form', 'submit', async e => {
   $('#chat-input').value = '';
   $('.assistant-intro').hidden = true;
   const scope = state.run?.id || null;
+  const chatProject = state.projectId;
   message(text, 'user');
   const pending = message('Inspecting context and choosing tools…');
   try {
     const r = await post('/assistant', {
       message: text,
       spec: state.spec,
-      run_id: scope
+      run_id: scope,
+      project_id: chatProject
     });
     pending.remove();
-    if (scope !== (state.run?.id || null)) {
+    if (scope !== (state.run?.id || null) || chatProject !== state.projectId) {
       notify('Assistant response saved to the original investigation.');
       return;
     }
@@ -732,17 +745,95 @@ on('#chat-input', 'keydown', e => {
     $('#chat-form').requestSubmit();
   }
 });
+function renderProjects() {
+  $('#project-select').innerHTML = state.projects.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('');
+  $('#project-select').value = state.projectId;
+  $('#project-report').href = '/api/projects/' + encodeURIComponent(state.projectId) + '/report';
+}
+async function refreshQueue() {
+  const jobs = await api('/queue');
+  $('#queue-summary').textContent = jobs.length + ' active or queued across all projects · one local worker';
+  $('#queue-list').innerHTML = jobs.map(job => '<div class="queue-job"><span>' + esc(job.title) + ' · ' + esc(job.status) + '</span><button class="button" data-cancel-job="' + esc(job.id) + '">Cancel</button></div>').join('') || '<p>No pending jobs. Ready for your next investigation.</p>';
+}
+on('#queue-list', 'click', async e => {
+  const button = e.target.closest('[data-cancel-job]');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await post('/runs/' + button.dataset.cancelJob + '/cancel', {});
+    notify('Cancellation requested. Partial results will be preserved.');
+    await refreshQueue();
+  } finally { button.disabled = false; }
+});
+async function switchProject(id) {
+  const token = ++state.loadToken;
+  clearTimeout(state.poll);
+  state.projectId = id;
+  state.run = state.comparison = state.selected = null;
+  state.spec = structuredClone(DEFAULT);
+  state.hidden.clear();
+  renderProjects();
+  history.replaceState(null, '', '#project=' + encodeURIComponent(id));
+  renderRun();
+  await refreshRuns();
+  if (token !== state.loadToken) return;
+  const draft = await api('/draft?project_id=' + encodeURIComponent(id));
+  if (token !== state.loadToken) return;
+  state.spec = draft || structuredClone(DEFAULT);
+  if (state.runs.length) await loadRun(state.runs[0].id);
+  else { view('investigation'); renderRun(); await loadChat(); }
+}
+on('#project-select', 'change', e => switchProject(e.target.value));
+let editingProject = null;
+function projectDialog(edit) {
+  editingProject = edit ? state.projectId : null;
+  const p = edit ? state.projects.find(p => p.id === editingProject) : {name:'', notes:''};
+  $('#project-dialog-title').textContent = edit ? 'Project notes & details' : 'New research project';
+  $('#project-name').value = p.name;
+  $('#project-notes').value = p.notes;
+  $('#project-error').textContent = '';
+  $('#project-dialog').showModal();
+}
+on('#create-project', 'click', () => projectDialog(false));
+on('#edit-project', 'click', () => projectDialog(true));
+on('#close-project', 'click', () => $('#project-dialog').close());
+on('#duplicate-run', 'click', () => {
+  const spec = structuredClone(state.run?.spec || state.spec);
+  spec.title = (spec.title.slice(0, 110) + ' · copy');
+  openPlan(spec);
+});
+on('#project-form', 'submit', async e => {
+  e.preventDefault();
+  $('#save-project').disabled = true;
+  try {
+    const body = {name:$('#project-name').value.trim(), notes:$('#project-notes').value};
+    if (!body.name) throw Error('Enter a project name.');
+    const p = await api('/projects' + (editingProject ? '/' + editingProject : ''), {method:editingProject ? 'PUT' : 'POST', body:JSON.stringify(body)});
+    state.projects = await api('/projects');
+    $('#project-dialog').close();
+    if (p.id !== state.projectId) await switchProject(p.id);
+    else renderProjects();
+    notify('Project saved.');
+  } catch(err) { $('#project-error').textContent = err.message; }
+  finally { $('#save-project').disabled = false; }
+});
+
 async function boot() {
   renderRun();
   try {
     state.health = await api('/health');
     renderHealth();
+    state.projects = await api('/projects');
+    const requestedProject = new URLSearchParams(location.hash.slice(1)).get('project');
+    if (state.projects.some(p => p.id === requestedProject)) state.projectId = requestedProject;
+    renderProjects();
+    await refreshQueue();
     await refreshRuns();
-    const draft = await api('/draft');
+    const draft = await api(projectPath('/draft'));
     if (draft) state.spec = draft;
     const selected = location.hash.startsWith('#run=') ? location.hash.slice(5) : null;
-    if (selected && state.runs.some(r => r.id === selected)) await loadRun(selected);
-    else if (location.hash !== '#draft' && state.runs.length) await loadRun(state.runs[0].id);
+    if (selected) await loadRun(selected);
+    else if (location.hash !== '#draft' && !location.hash.startsWith('#project=') && state.runs.length) await loadRun(state.runs[0].id);
     else {
       renderRun();
       await loadChat();
@@ -763,6 +854,12 @@ new ResizeObserver(entries => {
   }
 }).observe($('#chart'));
 boot();
+setInterval(() => {
+  if (!document.hidden) {
+    refreshQueue().catch(() => {});
+    if (state.view === 'history') refreshRuns().catch(() => {});
+  }
+}, 4000);
 if (document.modelContext?.registerTool) {
   const lifecycle = new AbortController();
   window.addEventListener('pagehide', () => lifecycle.abort(), {

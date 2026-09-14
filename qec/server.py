@@ -57,13 +57,15 @@ def get_run(run_id):
         row = db.execute("SELECT document FROM runs WHERE id=?", (run_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Investigation not found")
-    return json.loads(row[0])
+    run = json.loads(row[0])
+    run["project_id"] = run.get("project_id", "default")
+    return run
 
 
 def all_runs():
     with connect() as db:
         rows = db.execute(
-            "SELECT document FROM runs ORDER BY created DESC LIMIT 200"
+            "SELECT document FROM runs ORDER BY created DESC"
         ).fetchall()
     return [json.loads(row[0]) for row in rows]
 
@@ -71,6 +73,8 @@ def all_runs():
 @asynccontextmanager
 async def lifespan(app):
     with connect() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, notes TEXT NOT NULL, created TEXT NOT NULL)")
+        db.execute("INSERT OR IGNORE INTO projects VALUES(?,?,?,?)", ("default", "My research", "", now()))
         db.execute(
             "CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, created TEXT NOT NULL, document TEXT NOT NULL)"
         )
@@ -101,7 +105,7 @@ async def lifespan(app):
 
 
 app = FastAPI(
-    title="QEC Lab", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None
+    title="QEC Lab", version="0.2.0-dev", lifespan=lifespan, docs_url=None, redoc_url=None
 )
 app.add_middleware(
     TrustedHostMiddleware,
@@ -196,8 +200,63 @@ def settings(body: Settings):
     return {"gemini_connected": bool(API_KEY), "storage": "server memory until restart"}
 
 
+class Project(BaseModel):
+    name: str = Field(min_length=1, max_length=100, pattern=r"\S")
+    notes: str = Field(default="", max_length=10000)
+
+
+def get_project(project_id):
+    with connect() as db:
+        row = db.execute("SELECT id,name,notes,created FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Project not found")
+    return dict(zip(("id", "name", "notes", "created"), row))
+
+
+@app.get("/api/projects")
+def projects():
+    with connect() as db:
+        ids = db.execute("SELECT id FROM projects ORDER BY created").fetchall()
+    return [get_project(row[0]) for row in ids]
+
+
+@app.get("/api/queue")
+def queue():
+    return [{"id": r["id"], "title": r["spec"]["title"],
+             "project_id": r.get("project_id", "default"), "status": r["status"]}
+            for r in reversed(all_runs()) if r["status"] in ("queued", "running", "cancelling")]
+
+
+@app.post("/api/projects", status_code=201)
+def create_project(body: Project):
+    project_id = str(uuid.uuid4())
+    with connect() as db:
+        db.execute("INSERT INTO projects VALUES(?,?,?,?)", (project_id, body.name.strip(), body.notes, now()))
+    return get_project(project_id)
+
+
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: str, body: Project):
+    get_project(project_id)
+    with connect() as db:
+        db.execute("UPDATE projects SET name=?,notes=? WHERE id=?", (body.name.strip(), body.notes, project_id))
+    return get_project(project_id)
+
+
+@app.get("/api/projects/{project_id}/report")
+def project_report(project_id: str):
+    project = get_project(project_id)
+    runs = [r for r in all_runs() if r.get("project_id", "default") == project_id]
+    sections = [f"# {project['name']}", "## Researcher notes", project["notes"],
+                "## Investigations", "A snapshot of saved investigations. Notes are researcher-authored; results describe simulations."]
+    sections.extend(report(r) for r in runs)
+    return Response("\n\n".join(sections), media_type="text/markdown", headers={"Content-Disposition": 'attachment; filename="project-report.md"'})
+
+
 @app.get("/api/runs")
-def list_runs():
+def list_runs(project_id: str | None = None):
+    if project_id is not None:
+        get_project(project_id)
     return [
         {k: v for k, v in r.items() if k not in ("points", "events", "environment")}
         | {
@@ -205,22 +264,25 @@ def list_runs():
             "point_count": len(r["points"]),
         }
         for r in all_runs()
+        if project_id is None or r.get("project_id", "default") == project_id
     ]
 
 
 @app.get("/api/draft")
-def read_draft():
+def read_draft(project_id: str = "default"):
+    get_project(project_id)
     with connect() as db:
-        row = db.execute("SELECT value FROM workspace WHERE key='draft'").fetchone()
+        row = db.execute("SELECT value FROM workspace WHERE key=?", ("draft" if project_id == "default" else "draft:" + project_id,)).fetchone()
     return json.loads(row[0]) if row else None
 
 
 @app.post("/api/draft")
-def save_draft(spec: Experiment):
+def save_draft(spec: Experiment, project_id: str = "default"):
+    get_project(project_id)
     with connect() as db:
         db.execute(
-            "INSERT INTO workspace(key,value) VALUES('draft',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (spec.model_dump_json(),),
+            "INSERT INTO workspace(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("draft" if project_id == "default" else "draft:" + project_id, spec.model_dump_json()),
         )
     return {"saved": True}
 
@@ -281,12 +343,14 @@ def execute(run, event):
 
 
 @app.post("/api/runs", status_code=201)
-def start_run(spec: Experiment):
+def start_run(spec: Experiment, project_id: str = "default"):
+    get_project(project_id)
     with LOCK:
         if len(CANCEL) >= 8:
             raise HTTPException(429, "Queue full. Wait for a run to finish.")
         run = {
             "id": str(uuid.uuid4()),
+            "project_id": project_id,
             "created": now(),
             "status": "queued",
             "spec": spec.model_dump(),
@@ -398,16 +462,19 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     spec: Experiment
     run_id: str | None = None
+    project_id: str = "default"
 
 
 @app.post("/api/assistant")
 def assistant(body: ChatRequest):
+    get_project(body.project_id)
+    scope = body.run_id or ("draft" if body.project_id == "default" else "draft:" + body.project_id)
     if not AGENT_LOCK.acquire(blocking=False):
         raise HTTPException(
             429, "The assistant is answering another question. Try again shortly."
         )
     try:
-        history = read_messages(body.run_id or "draft")
+        history = read_messages(scope)
         result = agent.chat(
             API_KEY,
             body.message,
@@ -421,7 +488,7 @@ def assistant(body: ChatRequest):
                 "INSERT INTO messages(id,scope,created,document) VALUES(?,?,?,?)",
                 (
                     str(uuid.uuid4()),
-                    body.run_id or "draft",
+                    scope,
                     record["created"],
                     json.dumps(record),
                 ),

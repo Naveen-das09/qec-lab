@@ -4,6 +4,20 @@ An open source, local-first research workspace for quantum error correction. Ask
 
 **Status: working single-workspace alpha.** The scientific engine and manual workflow work without an AI key. Gemini enables tool-assisted planning and analysis. This is not yet a hosted multi-tenant SaaS.
 
+The **v0.2 development milestone** adds named research projects, project notes, separate drafts and draft conversations, a shared job queue with cancellation controls, duplicate-and-edit plans, and combined Markdown project reports. Existing investigations appear under **My research**. Projects organize one trusted local workspace; they are not account or security boundaries.
+
+![Project workspace with project controls and a completed baseline investigation](docs/screenshots/projects-v02.png)
+
+### Project workflow
+
+1. Choose **New project**, give it a name, and record your research question in its notes.
+2. Configure and run an investigation. History, recent runs, comparisons, and reports use the selected project.
+3. Use **Duplicate & edit** to review a follow-up plan. Saving a draft or opening a copy does not execute it.
+4. Inspect **Local job queue** to view and cancel pending work across projects.
+5. Use **Notes & details** to record observations and **Project report** to download notes and scientific summaries together. Individual reproduction bundles remain available separately.
+
+Remaining v0.2 work includes in-app model selection and connection testing, richer report figures, guided onboarding, and broader agent evaluation. This milestone is not the final v0.2 release.
+
 ## Platform preview
 
 Real results from a measurement-noise stress investigation: 150,000 sampled memory experiments across 15 configurations. The optional assistant is shown disconnected; these measurements were produced by the scientific engine.

@@ -2487,3 +2487,12 @@ pre {
     scroll-behavior: auto !important
   }
 }
+/* Project controls remain visible at compact workspace widths. */
+.project-bar { display:flex; flex-wrap:wrap; align-items:end; gap:10px; padding:16px; margin-bottom:24px; }
+.project-bar .field { flex:1 1 180px; margin:0; min-width:0; }
+.project-bar select { width:100%; }
+#queue-summary { flex-basis:100%; font-size:12px; color:var(--muted, #63746d); }
+#project-error { color:#9a4033; }
+#queue-details { width:100%; font-size:13px; }
+#queue-details summary { cursor:pointer; padding:6px 0; }
+.queue-job { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:8px 0; }
