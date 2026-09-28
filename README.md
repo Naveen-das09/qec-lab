@@ -16,7 +16,9 @@ The **v0.2 development milestone** adds named research projects, project notes, 
 4. Inspect **Local job queue** to view and cancel pending work across projects.
 5. Use **Notes & details** to record observations and **Project report** to download notes and scientific summaries together. Individual reproduction bundles remain available separately.
 
-Remaining v0.2 work includes in-app model selection and connection testing, richer report figures, guided onboarding, and broader agent evaluation. This milestone is not the final v0.2 release.
+The next v0.2 milestone now includes a four-step workflow guide, model configuration and connection testing in Settings, and illustrated HTML reports with measured plots, pointwise Wilson intervals, and researcher notes. Use **Illustrated report** and your browser's Print command to save a PDF. Reproduction bundles remain separate. Broader agent evaluation and release hardening remain before the final v0.2 release.
+
+![Illustrated research report](docs/screenshots/illustrated-report.png)
 
 ## Platform preview
 
@@ -47,6 +49,8 @@ To use Gemini, enter your key in **Settings & connections**. The key stays in se
     export GEMINI_MODEL="gemini-3.8-flash"
 
 Use a model available to your account that supports the Gemini GenerateContent function-calling API. No .env file is loaded automatically. .env.example documents the variables; do not commit secrets.
+
+You can also enter the model ID under **Settings → Gemini model ID → Save model**. This choice persists in SQLite and takes precedence over `GEMINI_MODEL` on subsequent starts. The API key remains in memory only. **Test connection** sends a small provider request using the saved model, without saving a conversation or creating an experiment. It may use API quota. A successful probe verifies that the model responds; it does not validate scientific answers or every tool-calling capability.
 
 Questions, plans, recent conversation history, and selected result summaries are sent to Google when you use the assistant. Raw detector arrays are excluded from the evidence tool. The UI reports provider errors without pretending to have run an AI investigation.
 
@@ -131,6 +135,8 @@ See the local [API reference](http://127.0.0.1:4173/docs) and [OpenAPI schema](h
 | POST /api/assistant | Ask Gemini with experiment context |
 | GET /api/messages?scope={run_id} | Read a persisted conversation |
 | POST /api/settings | Set or clear the in-memory Gemini key |
+| POST /api/settings/test | Test the configured Gemini model without starting an experiment |
+| GET /api/projects/{id}/report/html | Open a self-contained illustrated project report |
 
 ## Architecture
 

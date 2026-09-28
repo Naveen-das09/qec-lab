@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import agent
 from .engine import Experiment, circuit_for, environment, report, simulate
+from .reports import illustrated_report
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.getenv("QEC_DATA_DIR", str(ROOT / "data")))
@@ -88,6 +89,12 @@ async def lifespan(app):
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_scope_created ON messages(scope, created DESC)"
         )
+    with connect() as db:
+        model = db.execute("SELECT value FROM workspace WHERE key='gemini_model'").fetchone()
+    if model:
+        import re
+        if re.fullmatch(r"[A-Za-z0-9._-]{1,120}", model[0]):
+            agent.MODEL = model[0]
     for run in all_runs():
         if run["status"] in ("running", "queued", "cancelling"):
             run["status"] = "interrupted"
@@ -190,14 +197,40 @@ def health():
 
 
 class Settings(BaseModel):
-    api_key: str = Field(max_length=256)
+    api_key: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._-]+$")
 
 
 @app.post("/api/settings")
 def settings(body: Settings):
     global API_KEY
-    API_KEY = body.api_key.strip()
-    return {"gemini_connected": bool(API_KEY), "storage": "server memory until restart"}
+    if not AGENT_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the assistant request to finish before changing settings.")
+    try:
+        if body.model is not None:
+            with connect() as db:
+                db.execute("INSERT INTO workspace(key,value) VALUES('gemini_model',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (body.model,))
+            agent.MODEL = body.model
+        if body.api_key is not None:
+            API_KEY = body.api_key.strip()
+        return {"gemini_connected": bool(API_KEY), "model": agent.MODEL, "storage": "key in server memory until restart"}
+    finally:
+        AGENT_LOCK.release()
+
+
+@app.post("/api/settings/test")
+def test_connection():
+    if not AGENT_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the current assistant request to finish.")
+    try:
+        result = agent.chat(API_KEY, "Connection test only. Reply briefly that you can respond. Do not call tools or propose experiments.", Experiment().model_dump())
+        return {"ok": True, "model": result["model"], "message": "Gemini responded successfully. This checks access, not scientific accuracy."}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except httpx.HTTPError:
+        raise HTTPException(502, "Gemini could not be reached. Try again later.") from None
+    finally:
+        AGENT_LOCK.release()
 
 
 class Project(BaseModel):
@@ -251,6 +284,13 @@ def project_report(project_id: str):
                 "## Investigations", "A snapshot of saved investigations. Notes are researcher-authored; results describe simulations."]
     sections.extend(report(r) for r in runs)
     return Response("\n\n".join(sections), media_type="text/markdown", headers={"Content-Disposition": 'attachment; filename="project-report.md"'})
+
+
+@app.get("/api/projects/{project_id}/report/html", response_class=HTMLResponse)
+def project_illustrated_report(project_id: str):
+    project = get_project(project_id)
+    runs = [r for r in all_runs() if r.get("project_id", "default") == project_id]
+    return HTMLResponse(illustrated_report(project, runs))
 
 
 @app.get("/api/runs")

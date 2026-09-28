@@ -70,6 +70,54 @@ def test_unknown_projects_and_blank_names_rejected(client):
     assert client.get('/api/projects/missing/report').status_code == 404
 
 
+def test_model_settings_preserve_key_and_validate_id(client, monkeypatch):
+    monkeypatch.setattr(server.agent, 'MODEL', 'test-original')
+    assert client.post('/api/settings', json={'api_key':'private-test-key'}).status_code == 200
+    r = client.post('/api/settings', json={'model':'test-model'})
+    assert r.status_code == 200 and r.json()['gemini_connected']
+    assert server.API_KEY == 'private-test-key'
+    assert 'private-test-key' not in r.text
+    assert client.post('/api/settings', json={'model':'../../bad'}).status_code == 422
+    with server.connect() as db:
+        assert db.execute("SELECT value FROM workspace WHERE key='gemini_model'").fetchone()[0] == 'test-model'
+    assert client.post('/api/settings', json={'api_key':''}).status_code == 200
+    assert not server.API_KEY
+
+
+def test_connection_probe_does_not_write_runs_or_messages(client, monkeypatch):
+    def chat(key, message, spec):
+        return {'model':'test', 'answer':'Connected'}
+    monkeypatch.setattr(server.agent, 'chat', chat)
+    assert client.post('/api/settings/test').json()['ok']
+    assert client.get('/api/runs').json() == []
+    assert client.get('/api/messages').json() == []
+    server.AGENT_LOCK.acquire()
+    try:
+        assert client.post('/api/settings/test').status_code == 409
+        assert client.post('/api/settings', json={'model':'test'}).status_code == 409
+    finally:
+        server.AGENT_LOCK.release()
+
+
+def test_connection_probe_without_key_reports_error(client):
+    response = client.post('/api/settings/test')
+    assert response.status_code == 400
+    assert 'Connect a Gemini API key' in response.text
+
+
+def test_illustrated_report_escapes_notes_and_has_measured_chart(client):
+    pid = client.post('/api/projects', json={'name':'<script>bad</script>', 'notes':'<img src=x onerror=bad>'}).json()['id']
+    rid = client.post('/api/runs?project_id=' + pid, json={'distances':[3], 'probabilities':[0], 'shots':1000}).json()['id']
+    wait_for_run(client, rid)
+    result = client.get('/api/projects/' + pid + '/report/html')
+    assert result.status_code == 200
+    assert '<script>' not in result.text and '<img src=x' not in result.text
+    assert '&lt;script&gt;' in result.text
+    assert '<svg' in result.text and '0 / 1000' in result.text
+    assert 'Zero observed failures do not mean zero risk' in result.text
+    assert 'Provisional' not in result.text
+
+
 def test_queue_cancellation_preserves_project_and_partial_record(client, monkeypatch):
     submitted = []
     class HeldWorker:

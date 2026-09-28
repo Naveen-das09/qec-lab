@@ -2496,3 +2496,8 @@ pre {
 #queue-details { width:100%; font-size:13px; }
 #queue-details summary { cursor:pointer; padding:6px 0; }
 .queue-job { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:8px 0; }
+.onboarding { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:16px; margin-bottom:16px; }
+.onboarding > div { flex:1 1 100%; }
+.onboarding p { margin:6px 0 0; font-size:13px; color:#63746d; }
+#model-form { margin-top:20px; }
+#connection-result { font-size:13px; margin-top:14px; }

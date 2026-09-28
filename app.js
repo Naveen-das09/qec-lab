@@ -169,6 +169,7 @@ function renderHealth() {
   $('#assistant-provider').textContent = h.gemini_connected ? 'Gemini · tools enabled' : 'Gemini · connection required';
   $('#assistant-notice').textContent = h.gemini_connected ? 'Questions include your plan and selected run. Check AI conclusions against the evidence.' : 'Connect Gemini in Settings to ask a question. Manual experiments are ready to run.';
   $('#model-name').textContent = h.model;
+  $('#gemini-model').value = h.model;
   $('#engine-versions').innerHTML = ['python', 'stim', 'pymatching', 'numpy', 'machine', 'schema_version'].map(k => '<span>' + esc(k.replace('_', ' ')) + '<strong>' + esc(h.environment[k]) + '</strong></span>').join('');
 }
 async function refreshRuns() {
@@ -176,6 +177,7 @@ async function refreshRuns() {
   const runs = await api('/runs?project_id=' + encodeURIComponent(projectId));
   if (projectId !== state.projectId) return;
   state.runs = runs;
+  $('#workflow-status').textContent = runs.length ? runs.length + ' investigations in this project. Inspect counts and uncertainty, then record your conclusions in project notes.' : 'Define your question in project notes, then run a small baseline. No AI key is needed.';
   $('#run-count').textContent = state.runs.length;
   $('#recent-runs').innerHTML = state.runs.slice(0, 4).map(r => '<button class="recent-button ' + (r.id === state.run?.id ? 'selected' : '') + '" data-run="' + r.id + '"><i></i><span>' + esc(r.spec.title) + '</span></button>').join('') || '<p class="sidebar-hint">Your investigations will appear here.</p>';
   const el = $('#compare-run'),
@@ -640,6 +642,7 @@ on('#key-form', 'submit', async e => {
   state.health = await api('/health');
   renderHealth();
   notify('Key configured for this server session.');
+  $('#connection-result').textContent = 'Key configured. Test the connection to verify model access.';
 });
 on('#disconnect-key', 'click', async () => {
   await post('/settings', {
@@ -648,6 +651,24 @@ on('#disconnect-key', 'click', async () => {
   state.health = await api('/health');
   renderHealth();
   notify('Gemini disconnected.');
+  $('#connection-result').textContent = 'Disconnected. Connect a key before testing.';
+});
+on('#model-form', 'submit', async e => {
+  e.preventDefault();
+  await post('/settings', {model:$('#gemini-model').value.trim()});
+  state.health = await api('/health');
+  renderHealth();
+  $('#connection-result').textContent = 'Model saved. Test the connection to verify access.';
+});
+on('#test-connection', 'click', async () => {
+  const button = $('#test-connection');
+  button.disabled = true;
+  $('#connection-result').textContent = 'Testing the saved model with Gemini…';
+  try {
+    const result = await post('/settings/test', {});
+    $('#connection-result').textContent = result.model + ': ' + result.message;
+  } catch (err) { $('#connection-result').textContent = err.message; }
+  finally { button.disabled = false; }
 });
 $$('[data-prompt]').forEach(b => b.addEventListener('click', () => {
   $('#chat-input').value = b.dataset.prompt;
@@ -749,6 +770,7 @@ function renderProjects() {
   $('#project-select').innerHTML = state.projects.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('');
   $('#project-select').value = state.projectId;
   $('#project-report').href = '/api/projects/' + encodeURIComponent(state.projectId) + '/report';
+  $('#project-visual-report').href = '/api/projects/' + encodeURIComponent(state.projectId) + '/report/html';
 }
 async function refreshQueue() {
   const jobs = await api('/queue');
@@ -795,6 +817,10 @@ function projectDialog(edit) {
   $('#project-dialog').showModal();
 }
 on('#create-project', 'click', () => projectDialog(false));
+on('#guide-notes', 'click', () => projectDialog(true));
+on('#guide-plan', 'click', () => openPlan());
+on('#guide-results', 'click', () => { view('investigation'); tab('results'); if (!state.run) notify('Run an investigation first, or select one from Run history.'); });
+on('#guide-report', 'click', () => $('#project-visual-report').click());
 on('#edit-project', 'click', () => projectDialog(true));
 on('#close-project', 'click', () => $('#project-dialog').close());
 on('#duplicate-run', 'click', () => {
